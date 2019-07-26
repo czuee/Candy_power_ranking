@@ -1,0 +1,180 @@
+---
+title: "Candy1"
+author: "Czuee Morey"
+date: "7/24/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r pckgs, warning=FALSE, include=FALSE}
+
+library(gridExtra)
+library(grid)
+library(ggplot2)
+library(lattice)
+library(dplyr)
+library(caret)
+library(dlookr)
+library(Hmisc)
+```
+
+
+###Business question
+
+The Lidl purchasing group wants to expand its candy offering, and wants to create a brand new product. Based on data from existing brand products, the goal is to find out which product characteristics drive customer sentiment and subsequently make a recommendation on a new product.
+
+Question 1: Which product characteristics are correlated with the highest customer sentiment?
+
+Question 2: Recommend a new product based on these characteristics
+
+
+## Get data and clean
+
+#Read the file and get a look at the data
+```{r}
+candy <- read.csv("candy-data.csv", header = TRUE, na.strings = c("NA"," "))
+
+# head(candy)
+# 
+ summary(candy)
+# dim(candy)
+# table(candy$pluribus)
+# 
+# identical(candy$competitorname, unique(candy$competitorname))
+```
+
+
+#Observations:
+1. There are no NAs or missing values in the file. So, the dataset is complete and it is not required to clean any errors or missing values.
+2 .Each column is "tidy", each value is placed in its own “cell”, each variable in its own column, and each observation in its own row
+3. The variables chocolate to pluribus are binary, but are represented as integers. Needs to be corrected.
+4. "sugarpercent" is a percentile value for the dataset, not percentage of sugar content. Same for "pricepercent". We do not have information about the underlying distribution with absolute values, but only the rank in the dataset!
+5. "winpercent" is the percentage of times the candy won in matchups (customer satisfaction) from the 269,000 matchups. It is the dependent variable.
+6.  Assumption: Competitor name is not a predictor (unless brand value drives sales) and is unique, so can be made the row name. 
+
+#Convert binary columns to factor
+```{r}
+candy[ , 2:10] <- lapply(candy[ , 2:10], factor)
+sapply(candy, class)
+```
+
+#Descriptive statistics for numeric variables
+```{r}
+dlookr::describe(candy[ ,11:12])
+
+```
+The distribution for the continuous variables is good with a defined mean (se_mean is low) and the sd is much lower than the mean.
+The skewness and kurtosis is low for the predictors.
+
+###Exploratory Data Analysis
+
+
+#Distribution of each variable
+```{r}
+
+win.h <- qplot(winpercent, data = candy, ylab = "Frequency") +stat_bin(binwidth = 1) +ylim(0,15)
+price.h <- qplot(pricepercent, data = candy, ylab = "Frequency") +stat_bin(binwidth = 0.01) +ylim(0,15)
+sugar.h <- qplot(sugarpercent, data = candy, ylab = "Frequency") +stat_bin(binwidth = 0.01) +ylim(0,15)
+
+grid.arrange(sugar.h, price.h, win.h, nrow = 1, top=textGrob("Distribution of candy characteristics & winpercent"))
+
+```
+
+```{r}
+nm <- names(candy[2:10])
+pltlist <- list()
+for (i in seq_along(nm)) {
+    pltlist[[i]] <- ggplot(candy, aes_string(x = nm[i]))+ geom_bar() + ylim(0, nrow(candy))
+}
+
+grid.arrange(grobs = pltlist, top=textGrob("Distribution of candy characteristics"))
+```
+
+
+#Chocolate and fruity are mutually exclusive- very low overlap!
+```{r}
+table(candy$chocolate, candy$fruity)
+    #plot(candy$chocolate, candy$fruity, xlab = "Chocolate", ylab = "Fruity")
+```
+
+#Almost all bars have chocolate, while most hard candies dont have chocolate
+```{r}
+table(candy$chocolate, candy$bar)
+table(candy$chocolate, candy$hard)
+# table(candy$chocolate, candy$peanutyalmondy)
+# table(candy$chocolate, candy$caramel)
+# ftable(candy$chocolate, candy$bar, candy$peanutyalmondy)
+```
+
+#Sugarpercent and pricepercent don't have a high correlation
+```{r}
+qplot(sugarpercent, pricepercent, data = candy) + geom_point() + geom_smooth(method = lm)
+cor(candy$sugarpercent, candy$pricepercent, method = "spearman")
+```
+
+##Trends
+1. Chocolate and fruity each are present in >35% of candies while the other ingredients are in smaller quantities. Also, almost all candies have either chocolate or fruity, not both.
+2. More than 20% of candies are bars, and almost equal number of candies are single or present in a bag/box
+3. Almost all bars have chocolate, while most hard candies don't have chocolate. Peanutyalmondy and caramel containing candies also generally have chocolate.
+4.Peaks in pricepercent can be explained because certain unit prices like €3.99 are more preferred. Same could be true for spikes in sugarpercent.
+5.Sugar and pricepercent have weak positive correlation with each other. 
+
+
+###Model
+
+##Split into training & test sets
+```{r}
+set.seed(9)
+inTrain <- createDataPartition(candy$winpercent, p=0.8, list =FALSE)
+
+ctrain <- candy[inTrain,]
+ctest <- candy[-inTrain,]
+
+dim(ctrain); dim(ctest)
+
+```
+
+
+```{r}
+
+pairs(ctrain[ ,11:13])
+
+cutsugar <- cut2(ctrain$sugarpercent, g = 3, levels.mean = TRUE)
+#table(cutsugar)
+
+cutprice <- cut2(ctrain$pricepercent, g =3, levels.mean = TRUE)
+#table(cutprice)
+
+winlist  <- list()
+for (i in seq_along(nm)) {
+    winlist[[i]] <- ggplot(ctrain, aes_string(nm[i], "winpercent"))+ geom_boxplot(aes_string(color = nm[i]), show.legend = FALSE)
+}
+
+win1 <- ggplot(ctrain, aes(cutsugar, winpercent))+ geom_boxplot(aes_string(color = cutsugar))
+win2 <- ggplot(ctrain, aes(cutprice, winpercent))+ geom_boxplot(aes_string(color = cutprice))
+
+grid.arrange(grobs = winlist, top=textGrob("Winpercent by candy characteristics (train)"))
+grid.arrange(win1, win2, top=textGrob("Winpercent by candy characteristics (train)"))
+
+```
+
+
+
+
+
+
+<!-- #Competitorname as row names -->
+<!-- ```{r} -->
+<!-- row.names(candy) <- candy$competitorname -->
+<!-- candy <- candy[ ,-1] -->
+
+<!-- head(candy) -->
+<!-- ``` -->
+
+###Future Directions
+
+- The experiment design to pick winner from matchups might not be an optimal way to judge customer satisfaction. Instead sales would be a better variable.
+- Actual sugarcontent and price instead of an ordinal variable
