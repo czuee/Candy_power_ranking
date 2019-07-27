@@ -10,7 +10,6 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ```{r pckgs, warning=FALSE, include=FALSE}
-
 library(gridExtra)
 library(grid)
 library(ggplot2)
@@ -21,39 +20,55 @@ library(dlookr)
 library(Hmisc)
 ```
 
+### 1) Business Question
 
-###Business question
-
-The Lidl purchasing group wants to expand its candy offering, and wants to create a brand new product. Based on data from existing brand products, the goal is to find out which product characteristics drive customer sentiment and subsequently make a recommendation on a new product.
-
-Question 1: Which product characteristics are correlated with the highest customer sentiment?
-
-Question 2: Recommend a new product based on these characteristics
+*The Lidl purchasing group wants to expand its candy offering, and wants to create a brand new product. Based on data from existing brand products, the goal is to find out which product characteristics drive customer sentiment and subsequently make a recommendation on a new product.*
 
 
-## Get data and clean
+##### 1.1) What are we trying to predict?
 
-#Read the file and get a look at the data
+Which candy characteristics are correlated with the highest customer sentiment? Recommend a new candy based on these characteristics
+
+##### 1.2) What type of problem is it? Supervised or Unsupervised Learning? Classification or Regression? Binary or Multiclass? Univariate or Multivariate? Clustering?
+
+This is a multivariate supervised machine learning problem in which we have to predict numeric outcomes of percentage of wins for each candy in 269,000 matchups with another candy  - hence I need to use regression techniques.
+
+##### 1.3) What type of data do we have? 
+
+The data is in csv format. It presents a header row with the column names. It contains binary variables and two variables in percentiles (not percentage).
+
+##### 1.4) Import the dataset and check its size
 ```{r}
 candy <- read.csv("candy-data.csv", header = TRUE, na.strings = c("NA"," "))
-
-# head(candy)
-# 
- summary(candy)
-# dim(candy)
+dim(candy)
 # table(candy$pluribus)
 # 
 # identical(candy$competitorname, unique(candy$competitorname))
 ```
+Data frame with 85 rows and 13 columns. 
 
+### 2) Exploratory Data Analysis (EDA)
 
-#Observations:
+##### 2.1) View Data. Anything strange?
+
+```{r}
+str(candy)
+```
+
+```{r}
+summary(candy)
+```
+
+```{r}
+head(candy)
+```
+
+##### 2.2) Observations:
 1. There are no NAs or missing values in the file. So, the dataset is complete and it is not required to clean any errors or missing values.
-2 .Each column is "tidy", each value is placed in its own “cell”, each variable in its own column, and each observation in its own row
+2 .Each column is "tidy", each value is placed in its own “cell”, each variable in its own column, and each observation in its own row, so we don't need to transform it.
 3. The variables chocolate to pluribus are binary, but are represented as integers. Needs to be corrected.
-4. "sugarpercent" is a percentile value for the dataset, not percentage of sugar content. Same for "pricepercent". We do not have information about the underlying distribution with absolute values, but only the rank in the dataset!
-5. "winpercent" is the percentage of times the candy won in matchups (customer satisfaction) from the 269,000 matchups. It is the dependent variable.
-6.  Assumption: Competitor name is not a predictor (unless brand value drives sales) and is unique, so can be made the row name. 
+4. "sugarpercent" is a percentile value for the dataset, not percentage of sugar content. Same for "pricepercent". We do not have information about the underlying distribution with absolute values, but only the rank in the dataset.
+5.  Assumption: Competitor name is not a predictor (unless brand value drives sales) and is unique, so we can make it the row name. In any case, a brand name is not useful for Lidl to create a new candy.
 
 #Convert binary columns to factor
 ```{r}
@@ -61,30 +76,61 @@ candy[ , 2:10] <- lapply(candy[ , 2:10], factor)
 sapply(candy, class)
 ```
 
-#Descriptive statistics for numeric variables
+#Competitor name to rows
 ```{r}
-dlookr::describe(candy[ ,11:12])
-
+row.names(candy) <- candy$competitorname
+candy <- subset(candy, select =  -competitorname)
+head(candy)
 ```
-The distribution for the continuous variables is good with a defined mean (se_mean is low) and the sd is much lower than the mean.
-The skewness and kurtosis is low for the predictors.
 
-###Exploratory Data Analysis
-
-
-#Distribution of each variable
+##### 2.2) What is our Response Variable? Study it.
 ```{r}
-
-win.h <- qplot(winpercent, data = candy, ylab = "Frequency") +stat_bin(binwidth = 1) +ylim(0,15)
-price.h <- qplot(pricepercent, data = candy, ylab = "Frequency") +stat_bin(binwidth = 0.01) +ylim(0,15)
-sugar.h <- qplot(sugarpercent, data = candy, ylab = "Frequency") +stat_bin(binwidth = 0.01) +ylim(0,15)
-
-grid.arrange(sugar.h, price.h, win.h, nrow = 1, top=textGrob("Distribution of candy characteristics & winpercent"))
-
+summary(candy$winpercent)
 ```
 
 ```{r}
-nm <- names(candy[2:10])
+dlookr::describe(candy)
+```
+It ranges from 22.45 to 84.18 (in percent). 
+
+The mean is close to the median, but the median is slightly lower indicating a slight positive skew. The kurtosis is low. The sd_mean is low, and SD is lower than the mean which means that the mean is well-defined. 
+
+The distribution for the other continuous variables is also good.
+
+```{r}
+ggplot(data = candy) +
+  geom_histogram(mapping = aes(x = winpercent), binwidth = 5, boundary = 0, fill = "gray", col = "black") + 
+    geom_vline(xintercept = mean(candy$winpercent), col = "blue", size = 1) +
+    geom_vline(xintercept = median(candy$winpercent), col = "red", size = 1) +
+    annotate("text", label = "Median = 47.83", x = 40, y = 5, col = "red", size = 5) +
+    annotate("text", label = "Mean = 50.32", x = 55, y = 5, col = "blue", size = 5) +
+    ggtitle("Histogram of winpercent") +
+    theme_bw()
+```
+
+The distribution is not exactly normal, but we can proceed without transforming it. We can scale this variable to be on the same range as other variables (0 to 1)
+
+```{r}
+candy$winpercent <- candy$winpercent/100 
+```
+
+
+#Distribution of other variables
+```{r}
+
+price.h <- qplot(pricepercent, data = candy, ylab = "Frequency") +stat_bin(binwidth = 0.05) +ylim(0,15)
+sugar.h <- qplot(sugarpercent, data = candy, ylab = "Frequency") +stat_bin(binwidth = 0.05) +ylim(0,15)
+
+grid.arrange(sugar.h, price.h, nrow = 1, top=textGrob("Distribution of candy characteristics"))
+
+```
+
+We already saw that the mean and median for the sugar and price variables is close with low skew and kurtosis. However, there are a lot of breaks in the data or no values for certain sugar and price percentiles. This could be because:
+a. Our data is sparse, with only 85 observations so certain sugar/price points will not be covered.
+b. Certain unit prices like €3.99 are more preferred than a continuous range. Same could be true for spikes in sugarpercent due to rounding, etc.
+
+```{r}
+nm <- names(candy[1:9])
 pltlist <- list()
 for (i in seq_along(nm)) {
     pltlist[[i]] <- ggplot(candy, aes_string(x = nm[i]))+ geom_bar() + ylim(0, nrow(candy))
@@ -93,34 +139,79 @@ for (i in seq_along(nm)) {
 grid.arrange(grobs = pltlist, top=textGrob("Distribution of candy characteristics"))
 ```
 
+Chocolate and fruity each are present in >35 candies while the other ingredients are in smaller quantities. 
 
-#Chocolate and fruity are mutually exclusive- very low overlap!
+More than 20% of candies are bars. Almost equal number of candies are single or present in a bag/box
+
 ```{r}
-table(candy$chocolate, candy$fruity)
-    #plot(candy$chocolate, candy$fruity, xlab = "Chocolate", ylab = "Fruity")
+xtabs(~chocolate+fruity, data = candy)
+```
+Most candies have either chocolate or fruity, not both. 11 candies have neither.
+
+#Count tables for all factors
+Candies that contain chocolate - distribution of other ingredients
+```{r}
+candy[ ,1:9] %>% subset(chocolate == 1) %>% sapply(., summary) 
+```
+Chocolate candies generally don't have fruity and are not hard.
+
+```{r}
+candy[ ,1:9] %>% subset(fruity == 1) %>% sapply(., summary) 
+```
+Fruity candies never have bars, peanutyalmondy, nougat or crispedricewaffer and generally have no chocolate.
+
+```{r}
+candy[ ,1:9] %>% subset(bar == 1) %>% sapply(., summary)
+```
+Bars are never fruity, hard or present in a box/bag and generally contain chocolate.
+
+```{r}
+candy[ ,1:9] %>% subset(pluribus == 1) %>% sapply(., summary) 
+```
+Candies present in a box rarely have any other characteristics except fruity and sometimes hard and chocolate
+
+```{r}
+candy[ ,1:9] %>% subset(hard == 1) %>% sapply(., summary) %>% prop.table(., margin = 2)
+```
+Most hard candies are fruity but generally have none of the other ingredients.
+
+```{r}
+xtabs(~peanutyalmondy+caramel, data = candy)
 ```
 
-#Almost all bars have chocolate, while most hard candies dont have chocolate
+Chocolate and fruity seem to be mutually exclusive. It would be interesting to see what are the candies that contain neither.
+
 ```{r}
-table(candy$chocolate, candy$bar)
-table(candy$chocolate, candy$hard)
-# table(candy$chocolate, candy$peanutyalmondy)
-# table(candy$chocolate, candy$caramel)
-# ftable(candy$chocolate, candy$bar, candy$peanutyalmondy)
+candy[ ,1:9] %>% subset(chocolate == 0 & fruity == 0) %>% sapply(., summary)
 ```
 
-#Sugarpercent and pricepercent don't have a high correlation
+#Correlation for numeric variables
+
+Sugarpercent and pricepercent are in percentiles, so there is no requirement to center and scale these variables.
 ```{r}
 qplot(sugarpercent, pricepercent, data = candy) + geom_point() + geom_smooth(method = lm)
-cor(candy$sugarpercent, candy$pricepercent, method = "spearman")
+#cor(candy$sugarpercent, candy$pricepercent, method = "spearman")
 ```
+Sugarpercent and pricepercent don't have a high correlation.
 
-##Trends
-1. Chocolate and fruity each are present in >35% of candies while the other ingredients are in smaller quantities. Also, almost all candies have either chocolate or fruity, not both.
-2. More than 20% of candies are bars, and almost equal number of candies are single or present in a bag/box
-3. Almost all bars have chocolate, while most hard candies don't have chocolate. Peanutyalmondy and caramel containing candies also generally have chocolate.
-4.Peaks in pricepercent can be explained because certain unit prices like €3.99 are more preferred. Same could be true for spikes in sugarpercent.
-5.Sugar and pricepercent have weak positive correlation with each other. 
+```{r}
+ggplot(candy) + aes(sugarpercent, pricepercent, color = bar) + geom_point() 
+#+ geom_smooth(method = lm)
+```
+Bars have high sugarpercent and pricepercent
+
+###### Most columns seem to be necessary, and there is no column that is a replicate and can be removed.
+
+######Feature engineering 
+No new features can be added to the dataset based on the existing data. Also, the data seems to be informative and complete.
+we can explore quadratic terms and interaction terms while modeling.
+
+###### Outlier detection
+```{r}
+boxplot(candy[10:13], main = "Features Boxplot")
+
+```
+It looks like there are no outliers in the numeric variables
 
 
 ###Model
@@ -137,10 +228,10 @@ dim(ctrain); dim(ctest)
 
 ```
 
-
+#Explore the correlation of variables with winpercent
 ```{r}
 
-pairs(ctrain[ ,11:13])
+pairs(ctrain[ ,10:12])
 
 cutsugar <- cut2(ctrain$sugarpercent, g = 3, levels.mean = TRUE)
 #table(cutsugar)
@@ -161,9 +252,27 @@ grid.arrange(win1, win2, top=textGrob("Winpercent by candy characteristics (trai
 
 ```
 
+A linear model will probably capture a lot of variability in the dependent variable. Lets try this out.
 
+```{r}
+attach(ctrain)
+fit1 <- lm(winpercent ~ .-competitorname, data = ctrain)
+summary(fit1)
+train1 <- predict(fit1, newdata = ctrain)
+qplot(ctrain$winpercent, train1)
+par(mfrow=c(2,2))
+plot(fit1)
 
+fit2 <- lm(winpercent ~ pricepercent+sugarpercent+sqrt(sugarpercent))
+fit3 <- lm(winpercent ~ chocolate)
 
+summary(fit2)
+par(mfrow=c(2,2))
+plot(fit2)
+
+```
+
+F-statistic is significant with a small p-value - there is a relationship between the predictors and response.
 
 
 <!-- #Competitorname as row names -->
