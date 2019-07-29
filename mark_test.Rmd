@@ -18,6 +18,8 @@ library(dplyr)
 library(caret)
 library(dlookr)
 library(Hmisc)
+library("FactoMineR")
+library("factoextra")
 ```
 
 ### 1) Business Question
@@ -209,10 +211,65 @@ we can explore quadratic terms and interaction terms while modeling.
 ###### Outlier detection
 ```{r}
 boxplot(candy[10:13], main = "Features Boxplot")
-
 ```
 It looks like there are no outliers in the numeric variables
 
+##### Transform data if needed
+Most of the variables are binary. The numeric variables are already in percentile and do not need to be converted.
+
+##### Automatic Feature extraction. Dimensionality Reduction 
+We have only 12 features in our dataset, so we don't need to do any dimensionality reduction. However, I will run a categorical PCA (multiple correspondence analysis) to visualize the distance between the binarz variables.
+
+```{r}
+res.mca <- MCA(candy[ ,1:9], ncp = 5, graph = FALSE)
+fviz_screeplot(res.mca, addlabels = TRUE, ylim = c(0, 45))
+
+```
+Dimensions 1 & 2 represent `r 39.1+13.5`% variation contained in the data. 
+
+#MCA Biplots
+```{r}
+fviz_mca_biplot(res.mca, 
+                geom.ind = c("point"), 
+               repel = T, # Avoid text overlapping (slow if many point)
+               ggtheme = theme_bw())
+```
+The plot above shows a global pattern within the data. Rows (candies) are represented by blue points and columns (characteristics) by red triangles.
+
+The distance between the points gives a measure of their similarity.
+
+
+```{r}
+grp <- as.factor(candy[ , "chocolate"])
+fviz_mca_biplot(res.mca, 
+                #geom.ind = c("point"), 
+                select.ind = list(contrib = 30),
+                habillage = grp, addEllipses = TRUE, ellipse.level = 0.95,
+                select.var = list(contrib = 5),
+               repel = T, # Avoid text overlapping (slow if many point)
+               ggtheme = theme_bw())
+```
+
+The top 30 contributing candies and top 5 characteristics in dimension 1 vs 2. There are two clusters- one that contain chocolate and another that do not contain chocolate (mostly fruity).
+
+The top 5 contributors are chocolate1, fruity1, bar1, hard1 and nougat1.
+
+#Correlation of variables with each dimension.
+```{r}
+var <- get_mca_var(res.mca)
+
+fviz_mca_var(res.mca, choice = "mca.cor",
+            repel = TRUE, # Avoid text overlapping (slow)
+            ggtheme = theme_minimal())
+```
+Fruity, chocolate & bar are correlated with dimension 1, and hard, pluribus & nougat with dimension 2.
+
+#Degree of association between variable categories and a particular axis
+```{r}
+var$cos2
+
+```
+Some of the variables require more than 2 dimensions to represent all the variability.
 
 ###Model
 
