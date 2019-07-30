@@ -1,0 +1,416 @@
+---
+title: "Candy power ranking"
+author: "Czuee Morey"
+date: "29th July 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r pckgs, warning=FALSE, include=FALSE}
+library(gridExtra)
+library(grid)
+library(ggplot2)
+library(lattice)
+library(dplyr)
+library(caret)
+library(caretEnsemble)
+library(doParallel)
+library(dlookr)
+library(Hmisc)
+library("FactoMineR")
+library("factoextra")
+library(corrplot)
+library("infotheo")
+```
+
+### 1) Business Question
+
+*The Lidl purchasing group wants to expand its candy offering, and wants to create a brand new product. Based on data from existing brand products, the goal is to find out which product characteristics drive customer sentiment and subsequently make a recommendation on a new product.*
+
+
+#### What are we trying to predict?
+
+Which candy characteristics are correlated with the highest customer sentiment? Recommend a new candy based on these characteristics.
+
+#### What type of problem is it?
+
+This is a multivariate inference problem in which we have to find the characteristics that contribute to the highest percentage wins for candies in 269,000 matchups with another candy. A prediction is not important here, but we can make a simple regression model to recommend a new candy.
+
+#### What type of data do we have? 
+
+The data is in csv format. It presents a header row with the column names. It contains binary variables and two numeric variables in percentiles (not percentage). The predictor variable is in percentage.
+
+### 2) Data Cleaning
+
+#### Import the dataset and check its size
+```{r}
+candy <- read.csv("candy-data.csv", header = TRUE, na.strings = c("NA"," "))
+dim(candy)
+```
+
+#### View Data. Anything strange?
+
+```{r}
+str(candy)
+```
+
+```{r}
+head(candy)
+```
+
+#### Data Cleaning
+1. There are no NAs or missing values in the file. So, the dataset is complete and it is not required to clean any errors or missing values.
+2. Each column is "tidy", each value is placed in its own “cell”, each variable in its own column, and each observation in its own row, so we don't need to transform it.
+3. The variables chocolate to pluribus are binary, but are represented as integers. I will correct this if required.
+4. "sugarpercent" is a percentile value for the dataset, not percentage of sugar. Same for "pricepercent". We do not have information about the underlying distribution with absolute values, but only the rank in the dataset.
+5.  Assumption: Competitor name is not a predictor (unless brand value drives sales) and is unique, so we can make it the row name. In any case, a brand name is not useful for Lidl to create a new candy.
+6. The data seems to be complete, and no new features or dummy variables need to be added. We will explore quadratic and interaction terms while modeling. Also, there are only 12 variables, so feature reduction doesn't seem necessary.
+
+Make row names as the Competitor name
+```{r}
+row.names(candy) <- candy$competitorname
+candy <- subset(candy, select =  -competitorname)
+head(candy)
+```
+
+Scale winpercent to be on the same scale (0-1). I am not doing and center and scaling for other variables because they are binary or percentiles.
+```{r}
+candy$winpercent <- candy$winpercent/100
+```
+
+### 2) Exploratory Data Analysis (EDA)
+
+#### Distribution of each variable
+
+Let's start with looking at the distribution of continuous variables.
+```{r}
+dlookr::describe(candy[,10:12])
+
+```
+
+Response variable: winpercent
+```{r}
+ggplot(data = candy) +
+  geom_histogram(mapping = aes(x = winpercent), binwidth = 0.05, boundary = 0, fill = "gray", col = "black") + 
+    geom_vline(xintercept = mean(candy$winpercent), col = "blue", size = 1) +
+    geom_vline(xintercept = median(candy$winpercent), col = "red", size = 1) +
+    annotate("text", label = "Median = 0.48", x = 0.45, y = 5, col = "red", size = 4) +
+    annotate("text", label = "Mean = 0.50", x = 0.6, y = 5, col = "blue", size = 4) +
+    ggtitle("Histogram of winpercent") +
+    theme_bw()
+```
+
+For winpercent, the mean is close to the median, but the median is slightly lower indicating a slight positive skew. The kurtosis is low. The sd_mean is low, and SD is lower than the mean which means that the mean is well-defined. 
+The distribution of winpercent is not exactly normal, but we can proceed without transforming it.
+
+```{r}
+
+price.h <- qplot(pricepercent, data = candy, ylab = "Frequency") +stat_bin(binwidth = 0.05) +ylim(0,15)
+sugar.h <- qplot(sugarpercent, data = candy, ylab = "Frequency") +stat_bin(binwidth = 0.05) +ylim(0,15)
+
+grid.arrange(sugar.h, price.h, nrow = 1, top=textGrob("Distribution of candy characteristics"))
+
+```
+
+We already saw that the mean and median for the sugar and price variables is close with low skew and kurtosis. However, there are a lot of breaks in the data or no values for certain sugar and price percentiles. This could be because:
+a. Our data is sparse, with only 85 observations so certain sugar/price points will not be covered.
+b. Certain unit prices like €3.99 are more preferred than a continuous range. Same could be true for spikes in sugarpercent due to rounding, etc.
+
+Outlier detection
+```{r}
+boxplot(candy[10:12], main = "No obvious outliers")
+```
+
+```{r}
+nm <- names(candy[1:9])
+pltlist <- list()
+for (i in seq_along(nm)) {
+    pltlist[[i]] <- ggplot(candy, aes_string(x = nm[i]))+ geom_bar() + ylim(0, nrow(candy))
+}
+grid.arrange(grobs = pltlist, top=textGrob("Distribution of candy characteristics"))
+```
+
+Chocolate and fruity each are present in >35 candies while the other ingredients are in smaller quantities. 
+
+More than 20% of candies are bars. Almost equal number of candies are single or present in a bag/box.
+
+Do we have candies with both chocolate and fruity flavors?
+```{r}
+xtabs(~chocolate+fruity, data = candy)
+```
+Most candies have either chocolate or fruity, not both. 11 candies have neither.
+
+#### Correlation between different variables
+
+Quick and dirty correlation between variables
+```{r}
+corrplot(cor(candy, method = "spearman"), 
+         method = "color", 
+         tl.col = "black",
+         order =  "FPC",
+         is.corr = FALSE,
+         diag = FALSE
+         )
+```
+
+Caveat: Since most variables are binary, this is not a proper correlation matrix, but it gives us an idea about the trends.
+
+1. Candies that are fruity, hard and pluribus separate out as a cluster and are negatively correlated with the other variables.
+2. Chocolate candies are most preferred by customers. Other winning characteristics are peanutyalmondy, bars, crispedricewafer.
+3. Chocolate candies tend to be bars and have peanutyalmondy, crispedricewafer and a few other ingredients. But they tend to be expensive.
+4. Bars generally have chocolate and nougat but are not pluribus. They are also the most expensive and tend to have high sugar.
+5. No two variables have an extremely high correlation that shows replicates, so no need to remove any variables.
+
+Let's drill deeper into the distribution and correlations.
+
+```{r}
+
+cov(candy[ ,10:12])
+```
+The correlation between winpercent and pricepercent is around 0.35, a moderate positive correlation.
+
+```{r}
+winlist  <- list()
+candy_n <- lapply(candy[ , 1:9], factor)
+candy_n <- data.frame(candy_n, winpercent = candy$winpercent) 
+for (i in seq_along(nm)) {
+    winlist[[i]] <- ggplot(candy_n, aes_string(nm[i], y ="winpercent")) +
+        geom_boxplot(aes_string(color = nm[i]), show.legend = FALSE)
+}
+
+
+win1 <- qplot(sugarpercent, winpercent, data = candy) + geom_point() + geom_smooth(method = "loess")
+win2 <- qplot(pricepercent, winpercent, data = candy) + geom_point() + geom_smooth(method = "loess")
+
+grid.arrange(grobs = winlist, top=textGrob("Winpercent by candy characteristics"))
+grid.arrange(win1, win2, top=textGrob("Winpercent by candy characteristics"), nrow = 1)
+
+```
+The boxplots confirm our first impressions that chocolate, bar, peanutyalmondy and crispedricewafer have high winpercent. Of course, there are some outliers like a few bar0 points with very high winpercent or peanutyalmondy1 with very low winpercent.
+
+The correlation between winpercent and pricepercent does not follow a linear relationship - moderate price points are preferred but very high price points are not preferred. The relationship with sugarpercent is positive but weak as seen before.
+
+I will run a categorical PCA (multiple correspondence analysis) to visualize the distance between the binary variables, and have a better picture of what contributes to varibility in the dataset.
+
+```{r}
+res.pca <- PCA(candy[ ,1:11], 
+               #quanti.sup = c(10:11), 
+               ncp = 5, graph = TRUE)
+```
+```{r}
+res.pca$eig
+fviz_screeplot(res.pca, addlabels = TRUE, ylim = c(0, 45))
+```
+Dim1 has the highest contribution of 35%. Dim 2, 3 & 4 have almost equal contribution about 11%. 
+
+It takes 11 dimesions to cover 11% of the variability, which is equal to the number of variables so all the variables are important.
+
+```{r}
+grp <- as.factor(candy[ , "chocolate"])
+fviz_pca_biplot(res.pca, 
+                #geom.ind = c("point"), 
+                select.ind = list(contrib = 30),
+                habillage = grp, addEllipses = TRUE, ellipse.level = 0.95,
+                select.var = list(contrib = 5),
+                repel = T, col.var = "black",
+                title = "PCA Biplot showing the top contributors clustered by chocolate"
+                )
+
+```
+
+
+```{r}
+corrplot::corrplot(res.pca$var$cos2, is.corr=FALSE, cl.lim = c(0, 1), cl.ratio = 0.7)
+```
+
+```{r}
+grp <- as.factor(candy[ , "crispedricewafer"])
+fviz_pca_biplot(res.pca, 
+                axes = c(1,3), 
+                select.ind = list(contrib = 20),
+                habillage = grp, addEllipses = TRUE, ellipse.level = 0.95,
+                select.var = list(contrib = 5),
+                repel = T, col.var = "black",
+                title = "PCA Biplot clustered by crispedricewafer showing the top contributors"
+                )
+```
+Nougat is seen as a top contributor here, probably due to a cluster of snickers, milkyway, etc.
+
+Let's review our conclusions: 
+Chocolate, bar, peanutyalmondy and crispedricewafer have high winpercent. Pricepercent also has moderate positive correlation with winpercent. Fruity, hard and pluribus are negatively correlated with winpercent.
+
+Chocolate, bar, pricepercent, fruity, hard, and to a lesser extent crispedricewafer & nougat explain about 50% of the variability in the dataset.
+
+
+### 4) Modeling
+
+We are not sure the data is randomized, so we will shuffle it just in case:
+
+```{r}
+set.seed(123)
+candy_rand <- candy[sample(1:nrow(candy)), ]
+dim(candy_rand)
+```
+
+This is a small dataset with only 85 rows and considerable variation. We will divide the dataset into train and test sets and make sure we use cross validation when we train our model. In that way we ensure we are using our few observations as well as we can.
+
+####Split into training & test sets
+```{r}
+set.seed(9)
+inTrain <- createDataPartition(candy_rand$winpercent, p=0.8, list =FALSE)
+
+ctrain <- candy_rand[inTrain,]
+ctest <- candy_rand[-inTrain,]
+
+dim(ctrain); dim(ctest)
+
+```
+
+####Linear Models
+```{r}
+fit1 <- lm(winpercent ~ ., data = ctrain)
+summary(fit1)
+```
+
+Chocolate, fruity, peanutyalmondy and crispedricewafer have high significance in the model, which was expected. Sugarpercent is also significant. Although pricepercent shows some correlation, it is not linear and is hence not picked up.
+
+The R-squared is not very high at 0.58 and RSE is 0.102.
+
+```{r}
+plot(fit1)
+```
+F-statistic is significant with a small p-value, which indicates that there is a relationship between the predictors and response.
+The Residuals vs Fitted values and Q-Q plot are close to the expected values, so it seems like a good fit.
+There are a few outliers, but they don't have  high leverage. "One quarter" has medium leverage.
+```{r}
+confint(fit1)
+```
+
+
+```{r}
+train1 <- predict(fit1, newdata = ctrain)
+RMSE(train1, ctrain$winpercent)
+#qplot(ctrain$winpercent, train1) + geom_point() + geom_smooth(method = lm)
+```
+Overall, the basic model seems like a good fit with RMSE 0.093.
+
+
+I will try some other combinations and interactions.
+
+```{r}
+fit2 <- lm(winpercent ~ chocolate+ caramel+ bar+ peanutyalmondy+ crispedricewafer+ sugarpercent+ chocolate:caramel + I(pricepercent^2), data = ctrain)
+summary(fit2)
+```
+
+
+```{r}
+plot(fit2)
+```
+Only 2 points seem to have high leverage.
+
+```{r}
+train2 <- predict(fit2, newdata = ctrain)
+RMSE(train2, ctrain$winpercent)
+
+```
+RMSE on training set is not very different than for fit1.
+
+#### Train several models
+```{r}
+doParallel::registerDoParallel(4) # here I'm using 4 cores from my computer
+#getDoParWorkers()
+
+set.seed(987) # for replicability
+
+my_control <- trainControl(method = "cv", # for "cross-validation"
+                           number = 5, # number of k-folds
+                           savePredictions = "final",
+                           allowParallel = TRUE)
+
+```
+
+```{r message=FALSE, warning=FALSE}
+set.seed(222)
+
+model_list <- caretList(winpercent ~ .,
+                        data = ctrain,
+                        trControl = my_control, 
+                        methodList = c("lm", "rpart", "svmLinear", "rf", "xgbTree", "glm"),
+                        tuneList = NULL, # no manual hyperparameter tuning
+                        continue_on_fail = FALSE # stops if something fails
+                        #preProcess  = c("center","scale") 
+                        )
+```
+
+```{r}
+model_list$lm
+
+```
+
+```{r}
+options(digits = 3)
+
+model_results <- data.frame(LM = min(model_list$lm$results$RMSE),
+                            SVM = min(model_list$svmLinear$results$RMSE),
+                            RPART= min(model_list$rpart$results$RMSE),
+                            RF = min(model_list$rf$results$RMSE),
+                            XGBT = min(model_list$xgbTree$results$RMSE),
+                            GLM = min(model_list$glm$results$RMSE))
+
+
+print(model_results)
+```
+Random forest has the lowest RMSE,but it is also difficult to interpret than a LM. There is also a possibility that random forest is overfitting to the data.
+
+
+```{r}
+resamples <- resamples(model_list)
+dotplot(resamples, metric = "RMSE", title = "Dotplot for RMSE")
+dotplot(resamples, metric = "Rsquared", title = "Dotplot for Rsquared")
+```
+
+Although RF gives the least RMSE, it has a high variance compared to LM, which is not favourable.
+
+```{r}
+randf <- model_list$rf
+library(randomForest)
+#head(getTree(randf$finalModel, 1))
+
+importance(randf$finalModel)
+varImpPlot(randf$finalModel)
+```
+
+We will use fit1, fit2 and model_list for testing.
+
+#### Predict on Test dataset 
+```{r}
+x_test <- ctest[ ,1:11]
+y_test<- ctest[ ,12]
+
+pred_lm <- predict.train(model_list$lm, newdata = x_test)
+pred_svm <- predict.train(model_list$svmLinear, newdata = x_test)
+pred_rf <- predict.train(model_list$rf, newdata = x_test)
+pred_xgbT <- predict.train(model_list$xgbTree, newdata = x_test)
+
+pred_fit1 <- predict(fit1, newdata = x_test)
+pred_fit2<- predict(fit2, newdata = x_test)
+
+pred_RMSE <- data.frame(LM = RMSE(pred_lm, y_test),
+                        SVM = RMSE(pred_svm, y_test),
+                        RF = RMSE(pred_rf, y_test),
+                        XGBT = RMSE(pred_xgbT, y_test),
+                        F1 = RMSE(pred_fit1, y_test),
+                        F2 = RMSE(pred_fit2, y_test))
+
+print(pred_RMSE)
+```
+
+```{r}
+data.frame(y_test, pred_rf, pred_fit1)
+```
+
+

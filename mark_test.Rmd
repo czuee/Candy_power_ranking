@@ -16,6 +16,8 @@ library(ggplot2)
 library(lattice)
 library(dplyr)
 library(caret)
+library(caretEnsemble)
+library(doParallel)
 library(dlookr)
 library(Hmisc)
 library("FactoMineR")
@@ -29,7 +31,7 @@ library("factoextra")
 
 ##### 1.1) What are we trying to predict?
 
-Which candy characteristics are correlated with the highest customer sentiment? Recommend a new candy based on these characteristics
+Which candy characteristics are correlated with the highest customer sentiment? Recommend a new candy based on these characteristics.
 
 ##### 1.2) What type of problem is it? Supervised or Unsupervised Learning? Classification or Regression? Binary or Multiclass? Univariate or Multivariate? Clustering?
 
@@ -202,6 +204,17 @@ ggplot(candy) + aes(sugarpercent, pricepercent, color = bar) + geom_point()
 ```
 Bars have high sugarpercent and pricepercent
 
+```{r}
+
+df <- as.numeric(candy[ ,])
+
+install.packages("infotheo")
+infotheo::mutinformation(cbind(candy[1:9], dat))
+dat <- infotheo::discretize(candy[ ,10:12])
+head(dat)
+```
+
+
 ###### Most columns seem to be necessary, and there is no column that is a replicate and can be removed.
 
 ######Feature engineering 
@@ -210,7 +223,7 @@ we can explore quadratic terms and interaction terms while modeling.
 
 ###### Outlier detection
 ```{r}
-boxplot(candy[10:13], main = "Features Boxplot")
+boxplot(candy[10:12], main = "Features Boxplot")
 ```
 It looks like there are no outliers in the numeric variables
 
@@ -221,11 +234,16 @@ Most of the variables are binary. The numeric variables are already in percentil
 We have only 12 features in our dataset, so we don't need to do any dimensionality reduction. However, I will run a categorical PCA (multiple correspondence analysis) to visualize the distance between the binarz variables.
 
 ```{r}
-res.mca <- MCA(candy[ ,1:9], ncp = 5, graph = FALSE)
-fviz_screeplot(res.mca, addlabels = TRUE, ylim = c(0, 45))
-
+res.mca <- MCA(candy[ ,1:11], quanti.sup = c(10:11), ncp = 5, graph = TRUE)
 ```
-Dimensions 1 & 2 represent `r 39.1+13.5`% variation contained in the data. 
+
+
+```{r}
+fviz_screeplot(res.mca, addlabels = TRUE, ylim = c(0, 45))
+summary(res.mca, nb.dec = 2, ncp = 2)
+```
+Dimensions 1 & 2 represent `r 39.1+13.5`% variation contained in the data. 100% of the variability is captured in 9 dimensions.
+Pricepercent has some contribution to Dim1 but sugarpercent seems to have very less contribution in Dim1-2.
 
 #MCA Biplots
 ```{r}
@@ -247,7 +265,16 @@ fviz_mca_biplot(res.mca,
                 habillage = grp, addEllipses = TRUE, ellipse.level = 0.95,
                 select.var = list(contrib = 5),
                repel = T, # Avoid text overlapping (slow if many point)
-               ggtheme = theme_bw())
+               ggtheme = theme_bw(),
+               title = "MCA Biplot clustered by chocolate"
+               )
+```
+
+```{r}
+plotellipses(res.mca, 
+             keepvar=c(1,2,7,8), level = 0.95, 
+             means = FALSE, 
+             xlim = c(-2,2), ylim = c(-1.5, 1.5))
 ```
 
 The top 30 contributing candies and top 5 characteristics in dimension 1 vs 2. There are two clusters- one that contain chocolate and another that do not contain chocolate (mostly fruity).
@@ -264,22 +291,97 @@ fviz_mca_var(res.mca, choice = "mca.cor",
 ```
 Fruity, chocolate & bar are correlated with dimension 1, and hard, pluribus & nougat with dimension 2.
 
-#Degree of association between variable categories and a particular axis
+#Degree of association between variable categories and each dimension
 ```{r}
-var$cos2
+corrplot::corrplot(var$cos2, is.corr=FALSE, cl.lim = c(0, 1), cl.ratio = 0.7)
+```
+Some of the variables require more than 2 dimensions to represent all the variability. Crispedricewafer has variability represented in dimension 3. Also, we have seen that contribution of dimension 3 (12.9%) is close to the conrtibution of dimension 2 (13.5%), so we need to look into Dim3.
+
+```{r}
+grp1 <- as.factor(candy[ , "crispedricewafer"])
+fviz_mca_biplot(res.mca, 
+                #geom.ind = c("point"),
+                axes = c(2,3),
+                select.ind = list(contrib = 20),
+                habillage = grp1, addEllipses = TRUE, ellipse.level = 0.95,
+                select.var = list(contrib = 3),
+               repel = T, # Avoid text overlapping (slow if many point)
+               ggtheme = theme_bw(),
+               title = "MCA Biplot clustered by crispedricewafer"
+)
+```
+Crispedricewafer1, nougat1 and peanutyalmondy1 contribute to the most variability in Dim2-3. They are also distant from each other in these two dimensions,  while they were closer in Dim1.
+
+```{r}
+plotellipses(res.mca, keepvar=c(3:6,9), 
+             level = 0.95, means = FALSE, 
+             axes = c(2,3),
+             xlim = c(-2,2),
+             ylim = c(-2,2)
+             )
+```
+
+
+```{r}
+# Contributions of rows to dimension 1
+fviz_contrib(res.mca, choice = "var", axes = 1, top = 15)
+# Contributions of rows to dimension 2
+fviz_contrib(res.mca, choice = "var", axes = 2, top = 15)
+# Contributions of rows to dimension 2
+fviz_contrib(res.mca, choice = "var", axes = 3, top = 15)
 
 ```
-Some of the variables require more than 2 dimensions to represent all the variability.
+The red dashed line on the graph above indicates the expected average value, If the contributions were uniform.
+
+##### So, now we know that chocolate and fruity are important, but also hard, nougat, crispedricewafer, caramel & peanutyalmondy.
+
+#PCA with numeric variables
+```{r}
+res.pca = PCA(candy[,1:11], quali.sup = 1:9, scale.unit = F, ncp=2, graph = FALSE)
+
+fviz_pca_biplot(res.pca, 
+                geom.ind = c("point"))
+
+```
+
+
+In the MCA, the numeric variables seem to have little correlation to Dim1-2. A PCA with the qualitative variables as supplementary will give us an idea if there are any correlations between the quantitative and qualitative variables.
+
+```{r}
+
+plotellipses(res.pca, level = 0.95, 
+             means = FALSE, 
+             xlim = c(-1,1), ylim = c(-1, 1)
+             )
+var2 <- res.pca$quali.sup
+corrplot::corrplot(var2$eta2, is.corr=TRUE, cl.ratio = 1, cl.lim = c(0,0.5))
+
+```
+The correlation of the categorical variables with the PCA dimensions is much less than 0.5. The variables chocolate1, fruity0, bar1, caramel1 seem to have weak correlation with Dim1-2.
+
+##### 4.4) Is our dataset randomized?
+We are not sure it is randomized, so we will shuffle it just in case:
+
+```{r}
+set.seed(123)
+candy_rand <- candy[sample(1:nrow(candy)), ]
+dim(candy_rand)
+```
+
+##### 4.5) Define an evaluation protocol: how many samples we have? Hold out method. Cross validation needed?
+
+We have only 85 rows, so this is a very small dataset. We will divide the dataset into train and test sets and make sure we use cross validation when we train our model. In that way we ensure we are using our few observations as well as we can.
+
 
 ###Model
 
 ##Split into training & test sets
 ```{r}
 set.seed(9)
-inTrain <- createDataPartition(candy$winpercent, p=0.8, list =FALSE)
+inTrain <- createDataPartition(candy_rand$winpercent, p=0.8, list =FALSE)
 
-ctrain <- candy[inTrain,]
-ctest <- candy[-inTrain,]
+ctrain <- candy_rand[inTrain,]
+ctest <- candy_rand[-inTrain,]
 
 dim(ctrain); dim(ctest)
 
@@ -288,57 +390,191 @@ dim(ctrain); dim(ctest)
 #Explore the correlation of variables with winpercent
 ```{r}
 
-pairs(ctrain[ ,10:12])
-
-cutsugar <- cut2(ctrain$sugarpercent, g = 3, levels.mean = TRUE)
-#table(cutsugar)
-
-cutprice <- cut2(ctrain$pricepercent, g =3, levels.mean = TRUE)
-#table(cutprice)
+pairs(ctrain[ ,10:12]) #pairwise plots of numeric columns
 
 winlist  <- list()
 for (i in seq_along(nm)) {
     winlist[[i]] <- ggplot(ctrain, aes_string(nm[i], "winpercent"))+ geom_boxplot(aes_string(color = nm[i]), show.legend = FALSE)
 }
 
-win1 <- ggplot(ctrain, aes(cutsugar, winpercent))+ geom_boxplot(aes_string(color = cutsugar))
-win2 <- ggplot(ctrain, aes(cutprice, winpercent))+ geom_boxplot(aes_string(color = cutprice))
+cutsugar <- cut2(ctrain$sugarpercent, g = 3)
+table(cutsugar)
+
+#cutprice <- cut2(ctrain$pricepercent, g =3, levels.mean = TRUE)
+#table(cutprice)
+
+#win1 <- ggplot(ctrain, aes(cutsugar, winpercent))+ geom_boxplot(aes_string(color = cutsugar))
+#win2 <- ggplot(ctrain, aes(cutprice, winpercent))+ geom_boxplot(aes_string(color = cutprice))
+
+win1 <- qplot(sugarpercent, winpercent, data = candy) + geom_point() + geom_smooth(method = lm)
+win2 <- qplot(pricepercent, winpercent, data = candy) + geom_point() + geom_smooth(method = lm)
+
 
 grid.arrange(grobs = winlist, top=textGrob("Winpercent by candy characteristics (train)"))
-grid.arrange(win1, win2, top=textGrob("Winpercent by candy characteristics (train)"))
+grid.arrange(win1, win2, top=textGrob("Winpercent by candy characteristics (train)"), nrow = 1)
 
 ```
 
-A linear model will probably capture a lot of variability in the dependent variable. Lets try this out.
+Winpercent is high for some of the factor variables, but shows low correlation with the numeric variables.
+
+
 
 ```{r}
 attach(ctrain)
-fit1 <- lm(winpercent ~ .-competitorname, data = ctrain)
+fit1 <- lm(winpercent ~ ., data = ctrain)
 summary(fit1)
-train1 <- predict(fit1, newdata = ctrain)
-qplot(ctrain$winpercent, train1)
-par(mfrow=c(2,2))
-plot(fit1)
+```
+Chocolate, fruity, peanutyalmondy and crispedricewafer have high significance in the model, which was expected. Sugarpercent also has a high significance at 0.01%. The R-squared is 0.58 and RSE is 0.102.
 
-fit2 <- lm(winpercent ~ pricepercent+sugarpercent+sqrt(sugarpercent))
-fit3 <- lm(winpercent ~ chocolate)
+```{r}
+plot(fit1)
+```
+F-statistic is significant with a small p-value, which indicates that there is a relationship between the predictors and response.
+The Residuals vs Fitted values and Q-Q plot are cloe to the expected values, so it seems like a good fit and quadratic fit is not required.
+There are a few outliers, but they don't have  high leverage. One quarter has medium leverage
+
+
+```{r}
+train1 <- predict(fit1, newdata = ctrain)
+RMSE(train1, ctrain$winpercent)
+qplot(ctrain$winpercent, train1) + geom_point() + geom_smooth(method = lm)
+```
+Overall, the basic model seems like a good fit with RMSE 0.093.
+
+
+I will try changing a few parameters considering only the variables found to be highly significant in exploratory analysis
+```{r}
+fit2 <- lm(winpercent ~ .-pluribus-pricepercent-bar, data = ctrain)
 
 summary(fit2)
-par(mfrow=c(2,2))
 plot(fit2)
 
 ```
 
-F-statistic is significant with a small p-value - there is a relationship between the predictors and response.
+
+```{r}
+train2 <- predict(fit2, newdata = ctrain)
+RMSE(train2, ctrain$winpercent) #RMSE is actually higher than before
+#qplot(ctrain$winpercent, train1) + geom_point() + geom_smooth(method = lm)
+```
+
+There is not a big difference in the model fit between fit1 and fit2. The R2 is slightly lower (0.557) and RMSE is higher (0.0956).
+
+```{r}
+fit3 <- lm(winpercent ~ chocolate+ fruity+ peanutyalmondy+crispedricewafer+sugarpercent, data = ctrain)
+#fit3 <- lm(winpercent ~ chocolate)
+
+summary(fit3)
+plot(fit3)
+
+```
+```{r}
+train3 <- predict(fit3, newdata = ctrain)
+RMSE(train3, ctrain$winpercent) #RMSE is actually higher than before
+#qplot(ctrain$winpercent, train1) + geom_point() + geom_smooth(method = lm)
+```
+Whoppers is now an outlier with a high leverage.
+
+Fit1 considering all the variables seems to be the best fit for the linear model.
+
+I will run cross validation for various models using all the variables.
+
+#Parallel processing and cross validation 
+
+```{r}
+doParallel::registerDoParallel(4) # here I'm using 4 cores from my computer
+#getDoParWorkers()
+
+set.seed(987) # for replicability
+
+my_control <- trainControl(method = "cv", # for "cross-validation"
+                           number = 5, # number of k-folds
+                           savePredictions = "final",
+                           allowParallel = TRUE)
+
+```
+
+#Train several models
+```{r message=FALSE, warning=FALSE}
+set.seed(222)
+
+model_list <- caretList(winpercent ~ .,
+                        data = ctrain,
+                        trControl = my_control, 
+                        methodList = c("lm", "rpart", "svmRadial", "rf", "xgbTree", "glm"),
+                        tuneList = NULL, # no manual hyperparameter tuning
+                        continue_on_fail = FALSE # stops if something fails
+                        #preProcess  = c("center","scale") 
+                        )
+```
+Now that our caretList was trained, we can take a look at the results. We can access each separate model.
+
+```{r}
+model_list$lm
+
+```
+
+```{r}
+model_list$rpart
+```
+
+```{r}
+model_list$rf
+
+```
+
+Let's go to our objective, which is finding the model that has the lowest root mean squared error. We first asses this for the training data.
+
+#Random forest has the lowest RMSE
+```{r}
+options(digits = 3)
+
+model_results <- data.frame(LM = min(model_list$lm$results$RMSE),
+                            SVM = min(model_list$svmRadial$results$RMSE),
+                            RPART= min(model_list$rpart$results$RMSE),
+                            RF = min(model_list$rf$results$RMSE),
+                            XGBT = min(model_list$xgbTree$results$RMSE),
+                            GLM = min(model_list$glm$results$RMSE))
 
 
-<!-- #Competitorname as row names -->
-<!-- ```{r} -->
-<!-- row.names(candy) <- candy$competitorname -->
-<!-- candy <- candy[ ,-1] -->
+print(model_results)
+```
 
-<!-- head(candy) -->
-<!-- ``` -->
+RandomForest gives the lowest RMSE of 0.105. The mean for winpercent is about 0.5.
+
+```{r}
+resamples <- resamples(model_list)
+
+dotplot(resamples, metric = "RMSE", title = "Dotplot for RMSE")
+dotplot(resamples, metric = "Rsquared", title = "Dotplot for Rsquared")
+
+```
+
+```{r}
+modelCor(resamples)
+
+```
+
+```{r}
+set.seed(222)
+ensemble_1 <- caretEnsemble(c(model_list$lm, model_list$rf, model_list$svmRadial), 
+                            metric = "RMSE", 
+                            trControl = my_control)
+summary(ensemble_1)
+```
+The RMSE (0.1065) of the ensemble model is similar (in fact, higher) than the best model.
+
+
+```{r}
+randf <- model_list$rf
+model_list$rf$modelInfo
+library(randomForest)
+head(getTree(randf$finalModel, 1))
+
+importance(randf$finalModel)
+varImpPlot(randf$finalModel)
+```
+
 
 ###Future Directions
 
