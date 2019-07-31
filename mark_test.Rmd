@@ -155,7 +155,11 @@ Most candies have either chocolate or fruity, not both. 11 candies have neither.
 #Count tables for all factors
 Candies that contain chocolate - distribution of other ingredients
 ```{r}
-candy[ ,1:9] %>% subset(chocolate == 1) %>% sapply(., summary) 
+candy_n <- candy
+#str(candy_n)
+candy_n[ ,1:9] <- lapply(candy[ , 1:9], factor)
+
+candy_n %>% subset(fruity == 1) %>% sapply(., summary) 
 ```
 Chocolate candies generally don't have fruity and are not hard.
 
@@ -375,7 +379,7 @@ We have only 85 rows, so this is a very small dataset. We will divide the datase
 
 ###Model
 
-##Split into training & test sets
+#####Split into training & test sets
 ```{r}
 set.seed(9)
 inTrain <- createDataPartition(candy_rand$winpercent, p=0.8, list =FALSE)
@@ -387,7 +391,7 @@ dim(ctrain); dim(ctest)
 
 ```
 
-#Explore the correlation of variables with winpercent
+#####Explore the correlation of variables with winpercent
 ```{r}
 
 pairs(ctrain[ ,10:12]) #pairwise plots of numeric columns
@@ -416,8 +420,6 @@ grid.arrange(win1, win2, top=textGrob("Winpercent by candy characteristics (trai
 ```
 
 Winpercent is high for some of the factor variables, but shows low correlation with the numeric variables.
-
-
 
 ```{r}
 attach(ctrain)
@@ -580,3 +582,36 @@ varImpPlot(randf$finalModel)
 
 - The experiment design to pick winner from matchups might not be an optimal way to judge customer satisfaction. Instead sales would be a better variable.
 - Actual sugarcontent and price instead of an ordinal variable
+
+###Experimetn
+Discretize continuous
+```{r}
+
+candy_n[,1:9] <- lapply(candy[,1:9], factor)
+candy_n[ ,10:12] <- sapply(candy[,10:12], discretize, nbins = 3)
+candy_n[ ,10:12] <- lapply(candy_n[ ,10:12], as.factor)
+summary(candy_n)
+```
+
+```{r}
+set.seed(9)
+inTrain <- createDataPartition(candy_n$winpercent, p=0.8, list =FALSE)
+
+train <- candy_n[inTrain,]
+test <- candy_n[-inTrain,]
+
+dim(train); dim(test)
+```
+
+
+```{r}
+model <- glm(winpercent ~., data=train, family=binomial(link='probit'))
+summary(model)
+```
+
+```{r}
+fitted.results <- predict(model,newdata=test)
+fitted.results
+
+```
+

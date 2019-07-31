@@ -2,7 +2,9 @@
 title: "Candy power ranking"
 author: "Czuee Morey"
 date: "29th July 2019"
-output: html_document
+output:
+  pdf_document: default
+  html_document: default
 ---
 
 ```{r setup, include=FALSE}
@@ -25,6 +27,7 @@ library("FactoMineR")
 library("factoextra")
 library(corrplot)
 library("infotheo")
+library(randomForest)
 ```
 
 ### 1) Business Question
@@ -171,6 +174,7 @@ Let's drill deeper into the distribution and correlations.
 
 cov(candy[ ,10:12])
 ```
+
 The correlation between winpercent and pricepercent is around 0.35, a moderate positive correlation.
 
 ```{r}
@@ -190,6 +194,7 @@ grid.arrange(grobs = winlist, top=textGrob("Winpercent by candy characteristics"
 grid.arrange(win1, win2, top=textGrob("Winpercent by candy characteristics"), nrow = 1)
 
 ```
+
 The boxplots confirm our first impressions that chocolate, bar, peanutyalmondy and crispedricewafer have high winpercent. Of course, there are some outliers like a few bar0 points with very high winpercent or peanutyalmondy1 with very low winpercent.
 
 The correlation between winpercent and pricepercent does not follow a linear relationship - moderate price points are preferred but very high price points are not preferred. The relationship with sugarpercent is positive but weak as seen before.
@@ -205,6 +210,7 @@ res.pca <- PCA(candy[ ,1:11],
 res.pca$eig
 fviz_screeplot(res.pca, addlabels = TRUE, ylim = c(0, 45))
 ```
+
 Dim1 has the highest contribution of 35%. Dim 2, 3 & 4 have almost equal contribution about 11%. 
 
 It takes 11 dimesions to cover 11% of the variability, which is equal to the number of variables so all the variables are important.
@@ -258,7 +264,7 @@ dim(candy_rand)
 
 This is a small dataset with only 85 rows and considerable variation. We will divide the dataset into train and test sets and make sure we use cross validation when we train our model. In that way we ensure we are using our few observations as well as we can.
 
-####Split into training & test sets
+#### Split into training & test sets
 ```{r}
 set.seed(9)
 inTrain <- createDataPartition(candy_rand$winpercent, p=0.8, list =FALSE)
@@ -270,7 +276,7 @@ dim(ctrain); dim(ctest)
 
 ```
 
-####Linear Models
+#### Linear Models
 ```{r}
 fit1 <- lm(winpercent ~ ., data = ctrain)
 summary(fit1)
@@ -281,11 +287,14 @@ Chocolate, fruity, peanutyalmondy and crispedricewafer have high significance in
 The R-squared is not very high at 0.58 and RSE is 0.102.
 
 ```{r}
+par(mfrow=c(2,2))
 plot(fit1)
 ```
+
 F-statistic is significant with a small p-value, which indicates that there is a relationship between the predictors and response.
 The Residuals vs Fitted values and Q-Q plot are close to the expected values, so it seems like a good fit.
 There are a few outliers, but they don't have  high leverage. "One quarter" has medium leverage.
+
 ```{r}
 confint(fit1)
 ```
@@ -294,7 +303,7 @@ confint(fit1)
 ```{r}
 train1 <- predict(fit1, newdata = ctrain)
 RMSE(train1, ctrain$winpercent)
-#qplot(ctrain$winpercent, train1) + geom_point() + geom_smooth(method = lm)
+qplot(ctrain$winpercent, train1) + geom_point() + geom_smooth(method = lm)
 ```
 Overall, the basic model seems like a good fit with RMSE 0.093.
 
@@ -303,13 +312,16 @@ I will try some other combinations and interactions.
 
 ```{r}
 fit2 <- lm(winpercent ~ chocolate+ caramel+ bar+ peanutyalmondy+ crispedricewafer+ sugarpercent+ chocolate:caramel + I(pricepercent^2), data = ctrain)
+
 summary(fit2)
 ```
 
 
 ```{r}
+par(mfrow=c(2,2))
 plot(fit2)
 ```
+
 Only 2 points seem to have high leverage.
 
 ```{r}
@@ -318,6 +330,15 @@ RMSE(train2, ctrain$winpercent)
 
 ```
 RMSE on training set is not very different than for fit1.
+
+#### Random forest
+```{r}
+set.seed(18)
+fit.rf <- train(winpercent ~ ., data = ctrain, method ="rf", importance = TRUE)
+fit.rf
+```
+
+46% of the variability is explained by this model.
 
 #### Train several models
 ```{r}
@@ -334,7 +355,7 @@ my_control <- trainControl(method = "cv", # for "cross-validation"
 ```
 
 ```{r message=FALSE, warning=FALSE}
-set.seed(222)
+set.seed(18)
 
 model_list <- caretList(winpercent ~ .,
                         data = ctrain,
@@ -347,7 +368,7 @@ model_list <- caretList(winpercent ~ .,
 ```
 
 ```{r}
-model_list$lm
+model_list$rf
 
 ```
 
@@ -369,19 +390,18 @@ Random forest has the lowest RMSE,but it is also difficult to interpret than a L
 
 ```{r}
 resamples <- resamples(model_list)
+par(mfrow=c(2,2))
 dotplot(resamples, metric = "RMSE", title = "Dotplot for RMSE")
-dotplot(resamples, metric = "Rsquared", title = "Dotplot for Rsquared")
+#dotplot(resamples, metric = "Rsquared", title = "Dotplot for Rsquared")
 ```
 
-Although RF gives the least RMSE, it has a high variance compared to LM, which is not favourable.
 
 ```{r}
 randf <- model_list$rf
-library(randomForest)
 #head(getTree(randf$finalModel, 1))
 
-importance(randf$finalModel)
-varImpPlot(randf$finalModel)
+#importance(randf$finalModel)
+varImpPlot(randf$finalModel, main =  "Random Forest variable importance")
 ```
 
 We will use fit1, fit2 and model_list for testing.
@@ -409,8 +429,14 @@ pred_RMSE <- data.frame(LM = RMSE(pred_lm, y_test),
 print(pred_RMSE)
 ```
 
+The test prediction accuracy is not very different across the various models.
+
 ```{r}
-data.frame(y_test, pred_rf, pred_fit1)
+qplot(ctest$winpercent, pred_lm) + geom_point() + geom_smooth(method = lm)
+
+print(x_test[which(pred_lm > 0.8),], y_test[which(pred_lm > 0.8)])
+
 ```
 
+The outlier Snickers Crisper has a high predicted value, but actually has a lower winpercent.
 
